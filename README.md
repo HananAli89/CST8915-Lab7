@@ -41,13 +41,35 @@ Kubernetes self-healing restored the *service*, but not the *data*. The replacem
 The same loss happens when the Pod is replaced for other reasons, such as node failure, eviction, or a rolling update. Even if only the container restarts inside the same Pod, files written to the container's filesystem are not preserved [2].
 
 ### Potential Solutions
+1. **Attach a Persistent Volume:** Add a PersistentVolumeClaim and mount it at RabbitMQ's data directory (`/var/lib/rabbitmq`). Unlike the container filesystem, a persistent volume exists beyond the lifetime of any individual Pod [2], so a replacement Pod can remount the same data and recover its durable queues and persistent messages.
+2. **Run RabbitMQ as a StatefulSet:** Replace the Deployment with a StatefulSet that uses `volumeClaimTemplates`. Each Pod receives its own PersistentVolumeClaim and a stable identity (for example, `rabbitmq-0`) that is kept across rescheduling [1]. This keeps the RabbitMQ node name and its data matched after a restart [4].
+3. **Use the RabbitMQ Cluster Kubernetes Operator:** The operator is the RabbitMQ team's supported way to run RabbitMQ on Kubernetes. A single `RabbitmqCluster` resource creates the StatefulSet, Services, and persistent storage for each Pod, with the volume size and StorageClass set in the resource [5].
+4. **Add replication for high availability:** Persistence alone does not remove downtime with a single replica. Running three RabbitMQ nodes with quorum queues keeps replicated copies of messages, so the queue stays available if one Pod fails. RabbitMQ recommends quorum queues over classic queues when high availability and data safety are required [6].
+5. **Use a managed message broker:** Move messaging out of the cluster to a cloud service that handles storage, replication, and failover, such as Azure Service Bus (discussed below).
 
 ### Does Azure Service Bus Solve These Issues?
+**Yes, for the problems identified in this lab, but with trade-offs.**
+
+Azure Service Bus is a fully managed enterprise message broker that runs outside the AKS cluster [7]. Messages are stored by Azure rather than in a container's filesystem, so deleting, restarting, or rescheduling Pods in the cluster cannot erase queued orders. Service Bus can also span three availability zones, and Azure manages the underlying infrastructure [7]. This removes the data loss, the single point of failure, and the need to manage volumes or StatefulSets for the broker.
+
+However, it is not a drop-in replacement:
+
+- **Code changes:** The primary protocol for Service Bus is AMQP 1.0 [8], while the Order Service publishes with a RabbitMQ client (AMQP 0-9-1). The service would need to be updated to use the Azure Service Bus SDK, and its connection string would change.
+- **Different features:** Service Bus uses queues, topics, and subscriptions instead of RabbitMQ's exchanges and bindings, so any routing logic would need to be redesigned.
+- **Cost and portability:** It is a paid Azure service and ties the application to Azure, whereas RabbitMQ runs anywhere, including locally with Docker Compose as in Lab 5.
+
+Overall, Service Bus solves the persistence and availability issues by moving responsibility for message storage to Azure. A persistent StatefulSet or the RabbitMQ Operator solves the same issues while keeping RabbitMQ and the existing application code.
 
 ## Setup Challenges and Lessons Learned
+- **Region and VM size limits:** My Azure for Students subscription only allows certain regions, and `Standard_D2as_v4` was not available there. I created the cluster in Sweden Central with `Standard_B2as_v2`, using the Azure CLI because the portal blocks B-series sizes for the system node pools.
+- **"Durable" is not the same as "persistent":** `order_queue` was marked durable, but the orders were still lost, because durability only protects data that is written to storage that survives the Pod.
 
 ## References
 1. Kubernetes Documentation – StatefulSets: https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/
 2. Kubernetes Documentation – Volumes: https://kubernetes.io/docs/concepts/storage/volumes/
 3. RabbitMQ Documentation – Queues (Durability): https://www.rabbitmq.com/docs/queues
 4. RabbitMQ Blog – Deploying RabbitMQ to Kubernetes: What's Involved?: https://www.rabbitmq.com/blog/2020/08/10/deploying-rabbitmq-to-kubernetes-whats-involved
+5. RabbitMQ Documentation – Using the RabbitMQ Cluster Kubernetes Operator: https://www.rabbitmq.com/kubernetes/operator/using-operator
+6. RabbitMQ Documentation – Classic Queues: https://www.rabbitmq.com/docs/classic-queues
+7. Microsoft Learn – What is Azure Service Bus?: https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-messaging-overview
+8. Microsoft Learn – AMQP 1.0 in Azure Service Bus: https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-amqp-overview
