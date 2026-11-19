@@ -28,6 +28,17 @@ The RabbitMQ Deployment in `algonquin-pet-store-all-in-one.yaml` defines no `vol
 - **Single point of failure:** With `replicas: 1` and no shared storage, there is no second broker to take over. While the replacement Pod starts, the broker is unavailable; in the demo, the management dashboard returned `502 Bad Gateway` until the new Pod was ready.
 
 ### What Happens When the RabbitMQ Pod Is Deleted or Restarted
+The demo video reproduces this problem:
+
+1. Two orders were placed through the Store Front, and the management UI showed `order_queue` holding **2 messages**.
+2. The RabbitMQ Pod (`rabbitmq-5d4b559c94-rb2ll`) was deleted with `kubectl delete pod`.
+3. The Deployment immediately created a replacement Pod (`rabbitmq-5d4b559c94-mn54h`) to maintain `replicas: 1`. While it started, the management dashboard returned `502 Bad Gateway`.
+4. Once the new Pod was running, the management UI showed **no queues**. The queue and both orders were gone.
+5. A new order was then placed. The Order Service reconnected to the new broker and created a fresh `order_queue` containing only **1 message**; the earlier orders were never recovered.
+
+Kubernetes self-healing restored the *service*, but not the *data*. The replacement Pod started from the clean `rabbitmq:3-management` image with an empty data directory, because nothing outside the original container held a copy of it. The management UI also showed the broker running under a new node name (`rabbit@rabbitmq-5d4b559c94-mn54h`), since a Deployment gives each new Pod a random name. RabbitMQ ties its stored data to the node name, which is one of the reasons the RabbitMQ team recommends a StatefulSet, with its stable identity, over a Deployment [4].
+
+The same loss happens when the Pod is replaced for other reasons, such as node failure, eviction, or a rolling update. Even if only the container restarts inside the same Pod, files written to the container's filesystem are not preserved [2].
 
 ### Potential Solutions
 
